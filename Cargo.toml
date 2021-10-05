@@ -26,6 +26,7 @@ default-target = "x86_64-pc-windows-msvc"
 [target.'cfg(windows)'.dependencies]
 error-code = "2.1"
 str-buf = "1"
+image = "0.23.14"
 
 [features]
 std = ["error-code/std"]

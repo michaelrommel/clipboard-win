@@ -16,7 +16,7 @@ use winapi::ctypes::{c_int, c_uint, c_void};
 use winapi::um::stringapiset::{MultiByteToWideChar, WideCharToMultiByte};
 use winapi::um::winnls::CP_UTF8;
 use winapi::um::shellapi::{DragQueryFileW};
-use winapi::um::wingdi::{GetObjectW, GetDIBits, CreateDIBitmap, BITMAP, BITMAPINFO, BITMAPINFOHEADER, RGBQUAD, BI_RGB, DIB_RGB_COLORS, BITMAPFILEHEADER, CBM_INIT};
+use winapi::um::wingdi::{GetObjectW, GetDIBits, CreateDIBitmap, BITMAP, BITMAPINFO, BITMAPINFOHEADER, BITMAPV5HEADER, RGBQUAD, BI_RGB, DIB_RGB_COLORS, BITMAPFILEHEADER, CBM_INIT};
 use winapi::shared::windef::{HDC};
 use winapi::shared::winerror::ERROR_INCORRECT_SIZE;
 
@@ -29,6 +29,10 @@ use core::num::{NonZeroUsize, NonZeroU32};
 use alloc::string::String;
 use alloc::borrow::ToOwned;
 use alloc::format;
+
+use image::{load_from_memory_with_format, ImageFormat, DynamicImage};
+
+extern crate core;
 
 use crate::{SysResult, formats};
 use crate::utils::{RawMem};
@@ -380,6 +384,138 @@ pub fn get_file_list(out: &mut alloc::vec::Vec<alloc::string::String>) -> SysRes
     }
 
     Ok(num_files as usize)
+}
+
+
+/// Reads PNG image, appending image to the `out` vector and returning number
+/// of bytes read on success.
+pub fn get_png(out: &mut alloc::vec::Vec<u8>, id: u32) -> SysResult<usize> {
+
+    // get the raw size of the image in memory
+    let rawsize = size(id).unwrap().get();
+
+    // get the specified format
+    let clipboard_data = get_clipboard_data(id)?;
+    let lockptr: *mut c_void;
+    unsafe {
+        // Windows recommends to obtain a locked pointer and use that
+        lockptr = GlobalLock(clipboard_data.as_ptr());
+        if lockptr.is_null() {
+            return Err(SystemError::new(1309));
+        }
+    }
+
+    let mut buffer = alloc::vec::Vec::new();
+    unsafe {
+        let imagebuffer: &mut [u8] = core::slice::from_raw_parts_mut(lockptr as *mut u8, rawsize as usize);
+        buffer.extend_from_slice(&imagebuffer);
+
+        // now we can release the lock
+        GlobalUnlock(clipboard_data.as_ptr());
+    }
+
+    let dynimg: DynamicImage = match load_from_memory_with_format(buffer.as_mut_slice(), ImageFormat::Png) {
+        Ok(di) => di,
+        Err(err) => panic!("DynamicImage from memory failed: {:?}", err),
+    };
+
+    match dynimg.write_to(out, ImageFormat::Png) {
+        Ok(_) => Ok(rawsize),
+        Err(_) => return Err(SystemError::new(1308))
+    }
+}
+
+/// Reads DIBV5 image, appending image to the `out` vector and returning number
+/// of bytes read on success.
+pub fn get_dibv5(out: &mut alloc::vec::Vec<u8>) -> SysResult<usize> {
+
+    // get the raw size of the image in memory
+    let rawsize = size(formats::CF_DIBV5).unwrap().get();
+
+    let clipboard_data = get_clipboard_data(formats::CF_DIBV5)?;
+    let lockptr: *mut c_void;
+    unsafe {
+        // Windows recommends to obtain a locked pointer and use that
+        lockptr = GlobalLock(clipboard_data.as_ptr());
+        if lockptr.is_null() {
+            return Err(SystemError::new(1309));
+        }
+    }
+
+    // this allows us to refer to individual elements of the header
+    // information in below calculations
+    let dibv5: BITMAPV5HEADER;
+    unsafe {
+        // get a pointer to the memory segment where the header starts
+        let clipref = lockptr as *mut BITMAPV5HEADER;
+        // clone that into our strcuture, GetObjectW did not work for me
+        // because the CF_DIBV5 is not supported
+        dibv5 = *clipref.clone();
+    }
+
+    /*
+    eprintln!("bV5Size            {:?}", dibv5.bV5Size);
+    eprintln!("bV5Width           {:?}", dibv5.bV5Width);
+    eprintln!("bV5Height          {:?}", dibv5.bV5Height);
+    eprintln!("bV5Planes          {:?}", dibv5.bV5Planes);
+    eprintln!("bV5BitCount        {:?}", dibv5.bV5BitCount);
+    eprintln!("bV5Compression     {:?}", dibv5.bV5Compression);
+    eprintln!("bV5SizeImage       {:?}", dibv5.bV5SizeImage);
+    eprintln!("bV5XPelsPerMeter   {:?}", dibv5.bV5XPelsPerMeter);
+    eprintln!("bV5YPelsPerMeter   {:?}", dibv5.bV5YPelsPerMeter);
+    eprintln!("bV5ClrUsed         {:?}", dibv5.bV5ClrUsed);
+    eprintln!("bV5ClrImportant    {:?}", dibv5.bV5ClrImportant);
+    eprintln!("bV5RedMask         {:?}", dibv5.bV5RedMask);
+    eprintln!("bV5GreenMask       {:?}", dibv5.bV5GreenMask);
+    eprintln!("bV5BlueMask        {:?}", dibv5.bV5BlueMask);
+    eprintln!("bV5AlphaMask       {:?}", dibv5.bV5AlphaMask);
+    eprintln!("bV5CSType          {:?}", dibv5.bV5CSType);
+    eprintln!("bV5GammaRed        {:?}", dibv5.bV5CSType);
+    eprintln!("bV5CSType          {:?}", dibv5.bV5CSType);
+    eprintln!("bV5GammaRed        {:?}", dibv5.bV5GammaRed);
+    eprintln!("bV5GammaGreen      {:?}", dibv5.bV5GammaGreen);
+    eprintln!("bV5GammaBlue       {:?}", dibv5.bV5GammaBlue);
+    eprintln!("bV5Intent          {:?}", dibv5.bV5Intent);
+    eprintln!("bV5ProfileData     {:?}", dibv5.bV5ProfileData);
+    eprintln!("bV5ProfileSize     {:?}", dibv5.bV5ProfileSize);
+    eprintln!("bV5Reserved        {:?}", dibv5.bV5Reserved);
+    */
+
+    let mut filebuffer = alloc::vec::Vec::new();
+
+    // create the BMP file header
+    // the 'BM' signature
+    filebuffer.extend_from_slice(&u16::to_le_bytes(0x4d42));
+    // the file size in total including the file header
+    filebuffer.extend_from_slice(&u32::to_le_bytes(mem::size_of::<BITMAPFILEHEADER>() as u32 + rawsize as u32));
+    // 2 reserved WORDs
+    filebuffer.extend_from_slice(&u32::to_le_bytes(0));
+    // offset to pixel array from start of file header
+    if dibv5.bV5SizeImage == 0 {
+        // BI_RGB images may have set this to zero, then
+        filebuffer.extend_from_slice(&u32::to_le_bytes(mem::size_of::<BITMAPFILEHEADER>() as u32 + mem::size_of::<BITMAPV5HEADER>() as u32));
+    } else {
+        filebuffer.extend_from_slice(&u32::to_le_bytes(mem::size_of::<BITMAPFILEHEADER>() as u32 + (rawsize as u32 - dibv5.bV5SizeImage)));
+    }
+
+    // append the whole image structure including the fileinfoheader and bitmap
+    unsafe {
+        let imagebuffer: &mut [u8] = core::slice::from_raw_parts_mut(lockptr as *mut u8, rawsize as usize);
+        filebuffer.extend_from_slice(&imagebuffer);
+
+        // now we can release the lock
+        GlobalUnlock(clipboard_data.as_ptr());
+    }
+
+    let dynimg: DynamicImage = match load_from_memory_with_format(filebuffer.as_mut_slice(), ImageFormat::Bmp) {
+        Ok(di) => di,
+        Err(_) => return Err(SystemError::new(1310))
+    };
+
+    match dynimg.write_to(out, ImageFormat::Png) {
+        Ok(_) => Ok(rawsize),
+        Err(_) => return Err(SystemError::new(1311))
+    }
 }
 
 ///Reads bitmap image, appending image to the `out` vector and returning number of bytes read on
