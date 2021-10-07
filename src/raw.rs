@@ -30,7 +30,12 @@ use alloc::string::String;
 use alloc::borrow::ToOwned;
 use alloc::format;
 
+#[cfg(feature = "image")]
+// use image::{load_from_memory_with_format, ImageFormat, ImageOutputFormat, DynamicImage};
 use image::{load_from_memory_with_format, ImageFormat, DynamicImage};
+
+extern crate std;
+use std::eprintln;
 
 extern crate core;
 
@@ -387,8 +392,130 @@ pub fn get_file_list(out: &mut alloc::vec::Vec<alloc::string::String>) -> SysRes
 }
 
 
+/// An image from the clipboard
+#[cfg(feature = "image")]
+pub enum Image {
+    /// A binary-image variant for BMP, PNG, JPEG etc.
+    ImageBinary(ImageFormat, DynamicImage),
+    /// A text-image variant, e.g. SVG or plain unicode
+    ImageString(Option<String>, String)
+}
+
+// #[cfg(feature = "image")]
+// trait ToBuffer {
+//     fn write_to_buffer(self, out: &mut alloc::vec::Vec<u8>) -> SysResult<usize>;
+// }
+
+#[cfg(feature = "image")]
+impl Image {
+    /// Fetches an image from the clipboard, returns the enum
+    pub fn new<T>(args: T) -> Image
+        where T: Into<Image>
+    {
+        args.into()
+    }
+
+    fn get_id_for_format(format: &Option<String>) -> u32 {
+        let mut enmfmts = EnumFormats::new();
+        let mut found_format_id : u32 = 0;
+        let mut found_format = None;
+        for avail in &mut enmfmts {
+            let name = format_name(avail);
+            eprintln!(
+                "cmp format no: {:?} = {:?} with {:?}",
+                avail,
+                name.as_ref().unwrap(),
+                format.as_ref().unwrap()
+            );
+            let strname = name.as_ref().map(|s| String::from(s.as_str()));
+            if *format == strname {
+                found_format = name;
+                found_format_id = avail;
+                break;
+            }
+        };
+        match found_format {
+            Some(_) => return found_format_id,
+            None => return 0,
+        };
+    }
+
+    /// Fetches the desired image representation from the clipboard
+    /// and stores it in the enum variant
+    pub fn get_from_clipboard(&mut self) -> SysResult<usize> {
+        let mut len = 0;
+        match self {
+            Image::ImageString(format_name, imgstring) => {
+                let id = Image::get_id_for_format(&format_name);
+                // get the raw size of the image in memory
+                let rawsize = size(id).unwrap().get();
+                // get the specified format
+                let clipboard_data = get_clipboard_data(id).unwrap();
+                let lockptr: *mut c_void;
+                unsafe {
+                    // Windows recommends to obtain a locked pointer and use that
+                    lockptr = GlobalLock(clipboard_data.as_ptr());
+                    if lockptr.is_null() {
+                        return Err(SystemError::new(1313));
+                    }
+                }
+                // allocate stringbuffer
+                let mut stringbuffer = alloc::vec::Vec::new();
+                // copy the raw bytes
+                unsafe {
+                    let imagebuffer: &mut [u8] = core::slice::from_raw_parts_mut(lockptr as *mut u8, rawsize as usize);
+                    stringbuffer.extend_from_slice(&imagebuffer);
+                    // now we can release the lock
+                    GlobalUnlock(clipboard_data.as_ptr());
+                }
+                *imgstring = String::from(std::str::from_utf8(&stringbuffer).unwrap());
+                len = imgstring.len();
+            },
+            Image::ImageBinary(_format_name, _img) => {
+            }
+        };
+        Ok(len)
+    }
+
+    /// Writes the image representation to a buffer
+    pub fn write_to_buffer(self, out: &mut alloc::vec::Vec<u8>) -> SysResult<usize> {
+        eprintln!("write_to_buffer");
+        use Image::*;
+        match self {
+            ImageBinary(_f, _i) => {
+                eprintln!("binary arm");
+                Ok(0)
+            }
+            ImageString(_f, s) => {
+                eprintln!("string arm: {:?}", s);
+                out.append(&mut s.into_bytes());
+                Ok(0)
+            }
+        }
+    }
+}
+
+#[cfg(feature = "image")]
+impl From<Option<String>> for Image {
+    /// Fetches the text representation of an image from the clipboard
+    /// for instance a SVG image or drawio base64 encoded format
+    fn from(format_name: Option<String>) -> Self {
+        Image::ImageString(format_name, String::from(""))
+    }
+}
+
+#[cfg(feature = "image")]
+impl From<ImageFormat> for Image {
+    /// Fetches a binary image from the clipboard and stores it in an
+    /// DynamicImage
+    fn from(fmt: ImageFormat) -> Self {
+        Image::ImageBinary(fmt, DynamicImage::new_rgb8(10, 10))
+    }
+}
+
 /// Reads PNG image, appending image to the `out` vector and returning number
 /// of bytes read on success.
+#[cfg(feature = "image")]
 pub fn get_png(out: &mut alloc::vec::Vec<u8>, id: u32) -> SysResult<usize> {
 
     // get the raw size of the image in memory
@@ -427,6 +554,7 @@ pub fn get_png(out: &mut alloc::vec::Vec<u8>, id: u32) -> SysResult<usize> {
 
 /// Reads DIBV5 image, appending image to the `out` vector and returning number
 /// of bytes read on success.
+#[cfg(feature = "image")]
 pub fn get_dibv5(out: &mut alloc::vec::Vec<u8>) -> SysResult<usize> {
 
     // get the raw size of the image in memory
