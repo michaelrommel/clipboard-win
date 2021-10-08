@@ -398,13 +398,8 @@ pub enum Image {
     /// A binary-image variant for BMP, PNG, JPEG etc.
     ImageBinary(ImageFormat, DynamicImage),
     /// A text-image variant, e.g. SVG or plain unicode
-    ImageString(Option<String>, String)
+    ImageString(Option<String>, alloc::vec::Vec<u8>)
 }
-
-// #[cfg(feature = "image")]
-// trait ToBuffer {
-//     fn write_to_buffer(self, out: &mut alloc::vec::Vec<u8>) -> SysResult<usize>;
-// }
 
 #[cfg(feature = "image")]
 impl Image {
@@ -416,65 +411,44 @@ impl Image {
     }
 
     fn get_id_for_format(format: &Option<String>) -> u32 {
+        let requested: String = String::from(format.as_ref().unwrap());
         let mut enmfmts = EnumFormats::new();
         let mut found_format_id : u32 = 0;
-        let mut found_format = None;
-        for avail in &mut enmfmts {
-            let name = format_name(avail);
+        for no in &mut enmfmts {
+            let available: String = String::from(format_name(no).as_ref().unwrap().as_str());
             eprintln!(
                 "cmp format no: {:?} = {:?} with {:?}",
-                avail,
-                name.as_ref().unwrap(),
-                format.as_ref().unwrap()
+                no,
+                available,
+                requested,
             );
-            let strname = name.as_ref().map(|s| String::from(s.as_str()));
-            if *format == strname {
-                found_format = name;
-                found_format_id = avail;
+            if available == requested {
+                found_format_id = no;
                 break;
             }
         };
-        match found_format {
-            Some(_) => return found_format_id,
-            None => return 0,
-        };
+        return found_format_id;
     }
 
     /// Fetches the desired image representation from the clipboard
     /// and stores it in the enum variant
     pub fn get_from_clipboard(&mut self) -> SysResult<usize> {
-        let mut len = 0;
+        let result;
         match self {
             Image::ImageString(format_name, imgstring) => {
                 let id = Image::get_id_for_format(&format_name);
-                // get the raw size of the image in memory
-                let rawsize = size(id).unwrap().get();
-                // get the specified format
-                let clipboard_data = get_clipboard_data(id).unwrap();
-                let lockptr: *mut c_void;
-                unsafe {
-                    // Windows recommends to obtain a locked pointer and use that
-                    lockptr = GlobalLock(clipboard_data.as_ptr());
-                    if lockptr.is_null() {
-                        return Err(SystemError::new(1313));
-                    }
+                // did we find an id for the desired format string?
+                if id != 0 {
+                    result = get_vec(id, imgstring);
+                } else {
+                    result =  Err(SystemError::last());
                 }
-                // allocate stringbuffer
-                let mut stringbuffer = alloc::vec::Vec::new();
-                // copy the raw bytes
-                unsafe {
-                    let imagebuffer: &mut [u8] = core::slice::from_raw_parts_mut(lockptr as *mut u8, rawsize as usize);
-                    stringbuffer.extend_from_slice(&imagebuffer);
-                    // now we can release the lock
-                    GlobalUnlock(clipboard_data.as_ptr());
-                }
-                *imgstring = String::from(std::str::from_utf8(&stringbuffer).unwrap());
-                len = imgstring.len();
             },
-            Image::ImageBinary(_format_name, _img) => {
+            Image::ImageBinary(_format, _img) => {
+                result = Ok(0);
             }
         };
-        Ok(len)
+        return result
     }
 
     /// Writes the image representation to a buffer
@@ -486,9 +460,11 @@ impl Image {
                 eprintln!("binary arm");
                 Ok(0)
             }
-            ImageString(_f, s) => {
-                eprintln!("string arm: {:?}", s);
-                out.append(&mut s.into_bytes());
+            ImageString(_f, mut s) => {
+                eprintln!("string arm: {:?}",
+                    String::from(std::str::from_utf8(&s).unwrap())
+                );
+                out.append(&mut s);
                 Ok(0)
             }
         }
@@ -500,7 +476,8 @@ impl From<Option<String>> for Image {
     /// Fetches the text representation of an image from the clipboard
     /// for instance a SVG image or drawio base64 encoded format
     fn from(format_name: Option<String>) -> Self {
-        Image::ImageString(format_name, String::from(""))
+        let store = alloc::vec::Vec::new();
+        Image::ImageString(format_name, store)
     }
 }
 
