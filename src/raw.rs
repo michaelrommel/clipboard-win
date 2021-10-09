@@ -16,7 +16,7 @@ use winapi::ctypes::{c_int, c_uint, c_void};
 use winapi::um::stringapiset::{MultiByteToWideChar, WideCharToMultiByte};
 use winapi::um::winnls::CP_UTF8;
 use winapi::um::shellapi::{DragQueryFileW};
-use winapi::um::wingdi::{GetObjectW, GetDIBits, CreateDIBitmap, BITMAP, BITMAPINFO, BITMAPINFOHEADER, BITMAPV5HEADER, RGBQUAD, BI_RGB, DIB_RGB_COLORS, BITMAPFILEHEADER, CBM_INIT};
+use winapi::um::wingdi::{GetObjectW, GetDIBits, CreateDIBitmap, BITMAP, BITMAPINFO, BITMAPINFOHEADER, RGBQUAD, BI_RGB, DIB_RGB_COLORS, BITMAPFILEHEADER, CBM_INIT};
 use winapi::shared::windef::{HDC};
 use winapi::shared::winerror::ERROR_INCORRECT_SIZE;
 
@@ -30,17 +30,11 @@ use alloc::string::String;
 use alloc::borrow::ToOwned;
 use alloc::format;
 
-#[cfg(feature = "image")]
-// use image::{load_from_memory_with_format, ImageFormat, ImageOutputFormat, DynamicImage};
-use image::{load_from_memory_with_format, ImageFormat, DynamicImage};
-
-extern crate std;
-use std::eprintln;
-
-extern crate core;
-
 use crate::{SysResult, formats};
 use crate::utils::{RawMem};
+
+#[cfg(feature = "image")]
+pub mod clipboardimage;
 
 #[inline(always)]
 fn free_dc(data: HDC) {
@@ -389,238 +383,6 @@ pub fn get_file_list(out: &mut alloc::vec::Vec<alloc::string::String>) -> SysRes
     }
 
     Ok(num_files as usize)
-}
-
-
-/// An image from the clipboard
-#[cfg(feature = "image")]
-pub enum Image {
-    /// A binary-image variant for BMP, PNG, JPEG etc.
-    ImageBinary(ImageFormat, DynamicImage),
-    /// A text-image variant, e.g. SVG or plain unicode
-    ImageString(Option<String>, alloc::vec::Vec<u8>)
-}
-
-#[cfg(feature = "image")]
-impl Image {
-    /// Fetches an image from the clipboard, returns the enum
-    pub fn new<T>(args: T) -> Image
-        where T: Into<Image>
-    {
-        args.into()
-    }
-
-    fn get_id_for_format(format: &Option<String>) -> u32 {
-        let requested: String = String::from(format.as_ref().unwrap());
-        let mut enmfmts = EnumFormats::new();
-        let mut found_format_id : u32 = 0;
-        for no in &mut enmfmts {
-            let available: String = String::from(format_name(no).as_ref().unwrap().as_str());
-            eprintln!(
-                "cmp format no: {:?} = {:?} with {:?}",
-                no,
-                available,
-                requested,
-            );
-            if available == requested {
-                found_format_id = no;
-                break;
-            }
-        };
-        return found_format_id;
-    }
-
-    /// Fetches the desired image representation from the clipboard
-    /// and stores it in the enum variant
-    pub fn get_from_clipboard(&mut self) -> SysResult<usize> {
-        let result;
-        match self {
-            Image::ImageString(format_name, imgstring) => {
-                let id = Image::get_id_for_format(&format_name);
-                // did we find an id for the desired format string?
-                if id != 0 {
-                    result = get_vec(id, imgstring);
-                } else {
-                    result =  Err(SystemError::last());
-                }
-            },
-            Image::ImageBinary(_format, _img) => {
-                result = Ok(0);
-            }
-        };
-        return result
-    }
-
-    /// Writes the image representation to a buffer
-    pub fn write_to_buffer(self, out: &mut alloc::vec::Vec<u8>) -> SysResult<usize> {
-        eprintln!("write_to_buffer");
-        use Image::*;
-        match self {
-            ImageBinary(_f, _i) => {
-                eprintln!("binary arm");
-                Ok(0)
-            }
-            ImageString(_f, mut s) => {
-                eprintln!("string arm: {:?}",
-                    String::from(std::str::from_utf8(&s).unwrap())
-                );
-                out.append(&mut s);
-                Ok(0)
-            }
-        }
-    }
-}
-
-#[cfg(feature = "image")]
-impl From<Option<String>> for Image {
-    /// Fetches the text representation of an image from the clipboard
-    /// for instance a SVG image or drawio base64 encoded format
-    fn from(format_name: Option<String>) -> Self {
-        let store = alloc::vec::Vec::new();
-        Image::ImageString(format_name, store)
-    }
-}
-
-#[cfg(feature = "image")]
-impl From<ImageFormat> for Image {
-    /// Fetches a binary image from the clipboard and stores it in an
-    /// DynamicImage
-    fn from(fmt: ImageFormat) -> Self {
-        Image::ImageBinary(fmt, DynamicImage::new_rgb8(10, 10))
-    }
-}
-
-/// Reads PNG image, appending image to the `out` vector and returning number
-/// of bytes read on success.
-#[cfg(feature = "image")]
-pub fn get_png(out: &mut alloc::vec::Vec<u8>, id: u32) -> SysResult<usize> {
-
-    // get the raw size of the image in memory
-    let rawsize = size(id).unwrap().get();
-
-    // get the specified format
-    let clipboard_data = get_clipboard_data(id)?;
-    let lockptr: *mut c_void;
-    unsafe {
-        // Windows recommends to obtain a locked pointer and use that
-        lockptr = GlobalLock(clipboard_data.as_ptr());
-        if lockptr.is_null() {
-            return Err(SystemError::new(1309));
-        }
-    }
-
-    let mut buffer = alloc::vec::Vec::new();
-    unsafe {
-        let imagebuffer: &mut [u8] = core::slice::from_raw_parts_mut(lockptr as *mut u8, rawsize as usize);
-        buffer.extend_from_slice(&imagebuffer);
-
-        // now we can release the lock
-        GlobalUnlock(clipboard_data.as_ptr());
-    }
-
-    let dynimg: DynamicImage = match load_from_memory_with_format(buffer.as_mut_slice(), ImageFormat::Png) {
-        Ok(di) => di,
-        Err(err) => panic!("DynamicImage from memory failed: {:?}", err),
-    };
-
-    match dynimg.write_to(out, ImageFormat::Png) {
-        Ok(_) => Ok(rawsize),
-        Err(_) => return Err(SystemError::new(1308))
-    }
-}
-
-/// Reads DIBV5 image, appending image to the `out` vector and returning number
-/// of bytes read on success.
-#[cfg(feature = "image")]
-pub fn get_dibv5(out: &mut alloc::vec::Vec<u8>) -> SysResult<usize> {
-
-    // get the raw size of the image in memory
-    let rawsize = size(formats::CF_DIBV5).unwrap().get();
-
-    let clipboard_data = get_clipboard_data(formats::CF_DIBV5)?;
-    let lockptr: *mut c_void;
-    unsafe {
-        // Windows recommends to obtain a locked pointer and use that
-        lockptr = GlobalLock(clipboard_data.as_ptr());
-        if lockptr.is_null() {
-            return Err(SystemError::new(1309));
-        }
-    }
-
-    // this allows us to refer to individual elements of the header
-    // information in below calculations
-    let dibv5: BITMAPV5HEADER;
-    unsafe {
-        // get a pointer to the memory segment where the header starts
-        let clipref = lockptr as *mut BITMAPV5HEADER;
-        // clone that into our strcuture, GetObjectW did not work for me
-        // because the CF_DIBV5 is not supported
-        dibv5 = *clipref.clone();
-    }
-
-    /*
-    eprintln!("bV5Size            {:?}", dibv5.bV5Size);
-    eprintln!("bV5Width           {:?}", dibv5.bV5Width);
-    eprintln!("bV5Height          {:?}", dibv5.bV5Height);
-    eprintln!("bV5Planes          {:?}", dibv5.bV5Planes);
-    eprintln!("bV5BitCount        {:?}", dibv5.bV5BitCount);
-    eprintln!("bV5Compression     {:?}", dibv5.bV5Compression);
-    eprintln!("bV5SizeImage       {:?}", dibv5.bV5SizeImage);
-    eprintln!("bV5XPelsPerMeter   {:?}", dibv5.bV5XPelsPerMeter);
-    eprintln!("bV5YPelsPerMeter   {:?}", dibv5.bV5YPelsPerMeter);
-    eprintln!("bV5ClrUsed         {:?}", dibv5.bV5ClrUsed);
-    eprintln!("bV5ClrImportant    {:?}", dibv5.bV5ClrImportant);
-    eprintln!("bV5RedMask         {:?}", dibv5.bV5RedMask);
-    eprintln!("bV5GreenMask       {:?}", dibv5.bV5GreenMask);
-    eprintln!("bV5BlueMask        {:?}", dibv5.bV5BlueMask);
-    eprintln!("bV5AlphaMask       {:?}", dibv5.bV5AlphaMask);
-    eprintln!("bV5CSType          {:?}", dibv5.bV5CSType);
-    eprintln!("bV5GammaRed        {:?}", dibv5.bV5CSType);
-    eprintln!("bV5CSType          {:?}", dibv5.bV5CSType);
-    eprintln!("bV5GammaRed        {:?}", dibv5.bV5GammaRed);
-    eprintln!("bV5GammaGreen      {:?}", dibv5.bV5GammaGreen);
-    eprintln!("bV5GammaBlue       {:?}", dibv5.bV5GammaBlue);
-    eprintln!("bV5Intent          {:?}", dibv5.bV5Intent);
-    eprintln!("bV5ProfileData     {:?}", dibv5.bV5ProfileData);
-    eprintln!("bV5ProfileSize     {:?}", dibv5.bV5ProfileSize);
-    eprintln!("bV5Reserved        {:?}", dibv5.bV5Reserved);
-    */
-
-    let mut filebuffer = alloc::vec::Vec::new();
-
-    // create the BMP file header
-    // the 'BM' signature
-    filebuffer.extend_from_slice(&u16::to_le_bytes(0x4d42));
-    // the file size in total including the file header
-    filebuffer.extend_from_slice(&u32::to_le_bytes(mem::size_of::<BITMAPFILEHEADER>() as u32 + rawsize as u32));
-    // 2 reserved WORDs
-    filebuffer.extend_from_slice(&u32::to_le_bytes(0));
-    // offset to pixel array from start of file header
-    if dibv5.bV5SizeImage == 0 {
-        // BI_RGB images may have set this to zero, then
-        filebuffer.extend_from_slice(&u32::to_le_bytes(mem::size_of::<BITMAPFILEHEADER>() as u32 + mem::size_of::<BITMAPV5HEADER>() as u32));
-    } else {
-        filebuffer.extend_from_slice(&u32::to_le_bytes(mem::size_of::<BITMAPFILEHEADER>() as u32 + (rawsize as u32 - dibv5.bV5SizeImage)));
-    }
-
-    // append the whole image structure including the fileinfoheader and bitmap
-    unsafe {
-        let imagebuffer: &mut [u8] = core::slice::from_raw_parts_mut(lockptr as *mut u8, rawsize as usize);
-        filebuffer.extend_from_slice(&imagebuffer);
-
-        // now we can release the lock
-        GlobalUnlock(clipboard_data.as_ptr());
-    }
-
-    let dynimg: DynamicImage = match load_from_memory_with_format(filebuffer.as_mut_slice(), ImageFormat::Bmp) {
-        Ok(di) => di,
-        Err(_) => return Err(SystemError::new(1310))
-    };
-
-    match dynimg.write_to(out, ImageFormat::Png) {
-        Ok(_) => Ok(rawsize),
-        Err(_) => return Err(SystemError::new(1311))
-    }
 }
 
 ///Reads bitmap image, appending image to the `out` vector and returning number of bytes read on

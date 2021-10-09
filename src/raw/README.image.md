@@ -43,7 +43,11 @@ cases:
 
 - Specifying the desired clipboard content based on the `image`-crate's
   ImageFormat Enum.
+- Specifying the desired clipboard content based on the standard mime-type
+  for Svg.
 - Specifying the desired output format as `image`-crate's ImageOutputFormat
-- Specifying the `Format Name` as string for the text formats, the outputformat
-  is automatically set to `CF_UNICODETEXT`
+- Specifying the `Format Name` as string for the text formats that do not
+  also put one of the `CF_*TEXT` formats on the clipboard (currently only
+  `image/svg+xml`, potentially `text/plain` or `text/html`), the
+  outputformat is automatically set to `CF_UNICODETEXT`
 
